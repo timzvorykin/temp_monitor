@@ -6,33 +6,69 @@ import os
 import json
 
 # ============================================================
-# НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К БАЗЕ ДАННЫХ
+# ЗАГРУЗКА КОНФИГУРАЦИИ ИЗ ФАЙЛА
 # ============================================================
-DB_CONFIG = {
-    'host': '',
-    'user': '',
-    'password': '',
-    'database': '',
-    'port': 
-}
+def load_config():
+    """
+    Загружает все настройки из файла config.json.
+    Если файл не найден, выводит инструкцию по созданию.
+    """
+    config_file = 'config.json'
+    
+    if not os.path.exists(config_file):
+        print("=" * 60)
+        print("ОШИБКА: Файл config.json не найден!")
+        print("=" * 60)
 
-# ============================================================
-# ЗАГРУЗКА ТОКЕНА VK ИЗ ФАЙЛА
-# ============================================================
-def load_token():
-    """Читает токен группы VK из файла vk_token.txt"""
-    if os.path.exists('vk_token.txt'):
-        with open('vk_token.txt', 'r') as f:
-            return f.read().strip()
-    return None
+        return None
+    
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        # Проверяем наличие всех полей
+        required_db = ['host', 'user', 'password', 'database']
+        required_vk = ['token', 'group_id']
+        
+        db_config = config.get('database', {})
+        vk_config = config.get('vk', {})
+        
+        # Проверка полей БД
+        for field in required_db:
+            if field not in db_config:
+                print(f"ОШИБКА: В config.json отсутствует поле database.{field}")
+                return None
+        
+        # Проверка полей VK
+        for field in required_vk:
+            if field not in vk_config:
+                print(f"ОШИБКА: В config.json отсутствует поле vk.{field}")
+                return None
+        
+        # Добавляем порт по умолчанию, если не указан
+        if 'port' not in db_config:
+            db_config['port'] = 3306
+        
+        print("Конфигурация загружена из config.json")
+        return config
+        
+    except json.JSONDecodeError as e:
+        print(f"ОШИБКА: config.json содержит неверный JSON: {e}")
+        return None
+    except Exception as e:
+        print(f"ОШИБКА при чтении config.json: {e}")
+        return None
 
-VK_GROUP_TOKEN = load_token()
-VK_GROUP_ID = 
+# Загружаем конфигурацию
+CONFIG = load_config()
 
-# ============================================================
-# ФАЙЛ ДЛЯ ХРАНЕНИЯ ПОДПИСЧИКОВ
-# ============================================================
-SUBSCRIBERS_FILE = 'subscribers.json'
+if CONFIG is None:
+    exit(1)
+
+# Извлекаем настройки
+DB_CONFIG = CONFIG['database']
+VK_GROUP_TOKEN = CONFIG['vk']['token']
+VK_GROUP_ID = CONFIG['vk']['group_id']
 
 # ============================================================
 # ПЕРЕВОД ТЕХНИЧЕСКИХ НАЗВАНИЙ ХОЛОДИЛЬНИКОВ НА РУССКИЙ
@@ -57,11 +93,9 @@ def check_temperature():
     """
     connection = None
     try:
-        # Подключаемся к базе данных
         connection = mysql.connector.connect(**DB_CONFIG)
         cursor = connection.cursor(dictionary=True)
         
-        # SQL-запрос: получаем последнюю запись для каждого холодильника
         query = """
         SELECT 
             location,
@@ -81,7 +115,6 @@ def check_temperature():
         cursor.execute(query)
         results = cursor.fetchall()
         
-        # Собираем данные по всем холодильникам
         all_data = []
         has_alert = False
         
@@ -93,13 +126,12 @@ def check_temperature():
             
             print(f"{fridge_name}: {temperature}°C [{dt}]")
             
-            # Определяем статус температуры
             if temperature > 8:
-                status = 'critical'  # Критическое превышение
+                status = 'critical'
             elif temperature > 6:
-                status = 'warning'   # Повышенная температура
+                status = 'warning'
             else:
-                status = 'normal'    # Норма
+                status = 'normal'
             
             all_data.append({
                 'fridge_name': fridge_name,
@@ -108,7 +140,6 @@ def check_temperature():
                 'status': status
             })
             
-            # Проверяем, есть ли превышение порога
             if temperature > 6:
                 has_alert = True
         
@@ -123,74 +154,11 @@ def check_temperature():
             connection.close()
 
 # ============================================================
-# ПОЛУЧЕНИЕ СПИСКА ВСЕХ ПОДПИСЧИКОВ ГРУППЫ VK
-# ============================================================
-def get_all_subscribers():
-    """
-    Загружает полный список подписчиков группы через VK API.
-    Возвращает список с ID, именами и возможностью отправки сообщений.
-    """
-    print("Загрузка подписчиков группы...")
-    subscribers = []
-    
-    try:
-        offset = 0
-        count = 1000
-        
-        while True:
-            url = "https://api.vk.com/method/groups.getMembers"
-            params = {
-                'access_token': VK_GROUP_TOKEN,
-                'v': '5.131',
-                'group_id': VK_GROUP_ID,
-                'sort': 'id_asc',
-                'offset': offset,
-                'count': count,
-                'fields': 'can_write_private_message'
-            }
-            
-            response = requests.post(url, data=params, timeout=30)
-            result = response.json()
-            
-            if 'response' in result:
-                items = result['response']['items']
-                if not items:
-                    break
-                    
-                for item in items:
-                    can_write = item.get('can_write_private_message', False)
-                    subscribers.append({
-                        'id': item['id'],
-                        'first_name': item.get('first_name', ''),
-                        'last_name': item.get('last_name', ''),
-                        'can_write': can_write
-                    })
-                
-                print(f"  Загружено: {len(subscribers)} подписчиков...", end='\r')
-                offset += count
-                
-                if offset > 10000:
-                    print(f"\n  Загружено максимум 10000 подписчиков")
-                    break
-            else:
-                error = result.get('error', {})
-                print(f"\n  Ошибка загрузки: {error.get('error_msg', 'Unknown')}")
-                break
-        
-        print(f"\n  Всего загружено: {len(subscribers)} подписчиков")
-        return subscribers
-        
-    except Exception as e:
-        print(f"  Ошибка: {e}")
-        return []
-
-# ============================================================
-# ПОЛУЧЕНИЕ СПИСКА АКТИВНЫХ ПОДПИСЧИКОВ (КТО ПИСАЛ ГРУППЕ)
+# ПОЛУЧЕНИЕ СПИСКА АКТИВНЫХ ПОДПИСЧИКОВ
 # ============================================================
 def get_active_subscribers():
     """
     Возвращает список ID пользователей, которые могут получать сообщения.
-    Это те, кто написал группе хотя бы одно сообщение.
     """
     print("Проверка активных подписчиков...")
     active_subscribers = []
@@ -230,10 +198,7 @@ def get_active_subscribers():
 # ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ В VK
 # ============================================================
 def send_private_message(user_id, message):
-    """
-    Отправляет сообщение конкретному пользователю от имени группы.
-    Возвращает True при успехе, False при ошибке.
-    """
+    """Отправляет сообщение пользователю от имени группы."""
     try:
         url = "https://api.vk.com/method/messages.send"
         params = {
@@ -263,51 +228,40 @@ def send_private_message(user_id, message):
         return False
 
 # ============================================================
-# ФОРМИРОВАНИЕ И РАССЫЛКА СООБЩЕНИЯ С ДАННЫМИ
+# ФОРМИРОВАНИЕ И РАССЫЛКА СООБЩЕНИЯ
 # ============================================================
 def send_alert_to_subscribers(all_data):
-    """
-    Создаёт сообщение с данными по всем холодильникам.
-    Разделяет на повышенную и критическую температуру.
-    """
+    """Создаёт и рассылает сообщение с данными."""
     if not all_data:
         return
     
-    # Дата из первого холодильника
     dt = all_data[0]['datetime']
     
-    # Разделяем холодильники по статусам
     critical = [d for d in all_data if d['status'] == 'critical']
     warning = [d for d in all_data if d['status'] == 'warning']
     normal = [d for d in all_data if d['status'] == 'normal']
     
-    # Формируем сообщение
     message = f"{dt}\n\n"
     
-    # Критические превышения
     if critical:
         message += "Критично повышено:\n"
         for data in critical:
             message += f"{data['fridge_name']}: {data['temperature']}°C\n"
         message += "\n"
     
-    # Повышенная температура
     if warning:
         message += "Повышено:\n"
         for data in warning:
             message += f"{data['fridge_name']}: {data['temperature']}°C\n"
         message += "\n"
     
-    # Нормальная температура
     if normal:
         message += "В норме:\n"
         for data in normal:
             message += f"{data['fridge_name']}: {data['temperature']}°C\n"
     
-    # Получаем список активных подписчиков
     active_subscribers = get_active_subscribers()
     
-    # Если нет активных подписчиков - сохраняем в файл
     if not active_subscribers:
         print("Нет активных подписчиков для отправки")
         filename = f"alert_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -316,7 +270,6 @@ def send_alert_to_subscribers(all_data):
         print(f"Уведомление сохранено в {filename}")
         return
     
-    # Рассылаем уведомления
     print(f"\nОтправка уведомлений {len(active_subscribers)} подписчикам...")
     
     success_count = 0
@@ -327,7 +280,6 @@ def send_alert_to_subscribers(all_data):
     
     print(f"Отправлено: {success_count}/{len(active_subscribers)}")
     
-    # Резервная копия
     if success_count == 0:
         filename = f"alert_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(filename, 'w', encoding='utf-8') as f:
@@ -338,7 +290,7 @@ def send_alert_to_subscribers(all_data):
 # ПРОВЕРКА ПРАВ НА ОТПРАВКУ СООБЩЕНИЙ
 # ============================================================
 def test_messaging():
-    """Проверяет, есть ли у токена права на отправку сообщений."""
+    """Проверяет права токена на отправку сообщений."""
     print("\nПроверка прав на отправку сообщений...")
     
     try:
@@ -367,7 +319,7 @@ def test_messaging():
 # ГЛАВНЫЙ ЦИКЛ МОНИТОРИНГА
 # ============================================================
 def main():
-    """Основная функция: запускает мониторинг и бесконечно проверяет температуру"""
+    """Основная функция."""
     print("=" * 60)
     print("МОНИТОРИНГ ТЕМПЕРАТУРЫ ХОЛОДИЛЬНИКОВ")
     print("=" * 60)
@@ -377,10 +329,8 @@ def main():
     print(f"Критический порог: > 8°C")
     print("=" * 60)
     
-    # Проверяем права на отправку сообщений
     messages_ok = test_messaging()
     
-    # Проверяем подключение к базе данных
     print("\nПроверка подключения к БД...")
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
@@ -394,7 +344,6 @@ def main():
         print(f"Ошибка подключения к БД: {e}")
         return
     
-    # Выводим статус системы
     print("\n" + "=" * 60)
     print("СТАТУС СИСТЕМЫ:")
     print(f"  Отправка сообщений: {'Включена' if messages_ok else 'Отключена'}")
@@ -405,12 +354,8 @@ def main():
         print("\nТребуется настройка прав сообщений в группе VK")
         return
     
-    # Выводим статистику по подписчикам
     print("\nСтатистика подписчиков:")
-    all_subscribers = get_all_subscribers()
     active_subscribers = get_active_subscribers()
-    
-    print(f"  Всего подписчиков группы: {len(all_subscribers)}")
     print(f"  Получают уведомления: {len(active_subscribers)}")
     
     if len(active_subscribers) == 0:
@@ -420,32 +365,26 @@ def main():
     
     print("\nМониторинг запущен...\n")
     
-    # Переменная для отслеживания предыдущего состояния
     previous_has_alert = False
     
-    # Бесконечный цикл проверки температуры
     while True:
         try:
             print(f"\n{'─'*40}")
             print(f"{datetime.now().strftime('%H:%M:%S')}")
             
-            # Получаем данные о температуре
             all_data, has_alert = check_temperature()
             
-            # Отправляем уведомление если есть превышение или температура вернулась в норму
             if has_alert:
                 print(f"Обнаружено превышение температуры")
                 send_alert_to_subscribers(all_data)
                 previous_has_alert = True
             elif previous_has_alert:
-                # Температура нормализовалась после превышения
                 print("Температура вернулась в норму")
                 send_alert_to_subscribers(all_data)
                 previous_has_alert = False
             else:
                 print("Температура в норме")
             
-            # Ждём 5 минут до следующей проверки
             print("Ожидание 5 минут...")
             time.sleep(300)
             
